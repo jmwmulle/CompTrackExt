@@ -5,12 +5,14 @@ __author__ = "Brett Feltmate"
 import random
 import klibs
 from klibs import P
+from klibs.KLUserInterface import ui_request
+from klibs.KLResponseCollectors import KeyPressResponse, KeyMap
 from klibs.KLGraphics import *
 from klibs.KLUtilities import *
-#from klibs.KLUserInterface import *
+from klibs.KLEventInterface import TrialEventTicket as TVT
 from klibs.KLConstants import *
 from klibs.KLKeyMap import KeyMap
-from klibs.KLResponseCollectors import KeyPressResponse as KPR
+import sdl2
 from klibs.KLGraphics.KLNumpySurface import *
 from CompTrack import *
 import klibs.KLDatabase
@@ -26,6 +28,7 @@ class CompensatoryTrackingTask(klibs.Experiment):
 		flip()
 
 		self.frames = []  # data for every screen refresh are captured and stored by trial
+
 		# Ensure mouse-shake setting is disabled, as it will be triggered by mouse input
 		if not P.development_mode:
 			self.txtm.add_style('UserAlert', 16, (255, 000, 000))
@@ -34,11 +37,7 @@ class CompensatoryTrackingTask(klibs.Experiment):
 		# CompTrack class handles all events
 		self.comp_track = CompTrack()
 		self.comp_track.timeout_after = P.pvt_timeout
-
-		# Set session parameters
-		self.comp_track.session_params['exp_duration'] = 300  # Total duration of session, in seconds
-		self.comp_track.session_params['reset_target_after_poll'] = True  # Should cursor reset to center after PVT events?
-
+		self.generate_ITIs()
 
 		# Ensure mouse starts at centre and set invisible
 		mouse_pos(False, P.screen_c)
@@ -49,21 +48,25 @@ class CompensatoryTrackingTask(klibs.Experiment):
 		pass
 
 	def setup_response_collector(self):
-		self.rc.uses(KPR('pvt_response_listener'))
-		self.rc.pvt_response_listner.key_map = KeyMap('space', 'SPACE', ' ')
-		self.rc.pvt_response_listner.interrupts = True
+		self.rc.uses([KeyPressResponse])
+		self.rc.listeners['keypress_listener'].key_map = KeyMap('PVTMap', ['space'], ['SPACE'], [sdl2.SDLK_KP_SPACE])
+		self.rc.listeners['keypress_listener'].interrupts = True
 		self.rc.display_callback = self.comp_track.refresh
+		self.rc.display_args = [self.event_queue]  # note, RC splats the passed list, so we need to encapsulate
 		self.rc.before_return_callback = self.event_label
 		self.rc.before_return_args = ['response', self.evm.trial_time]
 
 	def trial_prep(self):
-		self.evm.register_ticket(self.ev_label, self.comp_track.next_trial_start_time)
 		self.comp_track.next_trial_start_time = self.evm.trial_time + self.itis.pop()
-		while self.evm.before(self.ev_label):
-			self.ui_request(True)
+		self.evm.register_ticket(TVT(self.event_label('pvt'), self.comp_track.next_trial_start_time))
+		pump()
 
 	def trial(self):
-		self.ComptTrack.end_trial(self.rc.collect()[1])
+		while self.evm.before(self.event_label('pvt')):
+			event_q = pump(True)
+			ui_request(None, None, event_q)
+			self.comp_track.refresh(event_q)
+		self.comp_track.end_trial(self.rc.collect()[1])
 
 		trial_data = {
 			"block_num": P.block_number,
@@ -102,8 +105,11 @@ class CompensatoryTrackingTask(klibs.Experiment):
 			quit()
 
 	def generate_ITIs(self):
-		if (0.25 * P.trial_count * P.pvt_timeout) + (P.trial_count * sum(P.iti) * 0.5) < P.exp_duration:
-			raise ValueError("It is unlikely this number of trials can be completed in the allotted time.")
+		if not P.development_mode:
+			trial_count = P.trials_per_block * P.blocks_per_experiment
+			expected_duration = (0.25 * trial_count * P.pvt_timeout) + ( trial_count * sum(P.iti) * 0.5)
+			if expected_duration < P.exp_duration:
+				raise ValueError("It is unlikely this number of trials can be completed in the allotted time.")
 
 		# start with a uniform block of minimum itis
 		self.itis = P.trials_per_block * P.blocks_per_experiment * [P.iti[0]]
@@ -117,11 +123,9 @@ class CompensatoryTrackingTask(klibs.Experiment):
 				self.itis[index] += 1
 				surplus -= 1
 
-
-
-
-
-
+	@property
+	def event_queue(self):
+		return pump(True)
 
 	def response_callback(self):
 		self.rc.pvt_keyboard_response.responses[-1].append(self.frame_id())
@@ -131,4 +135,7 @@ class CompensatoryTrackingTask(klibs.Experiment):
 
 	def current_frame_id(self):
 		return "{}:{}".format(P.trial_number - 1, len(self.frames[P.trial_number] - 1)
+
+
+
 )

@@ -125,6 +125,8 @@ class CompTrack(EnvAgent):
 		self.mitigating = False  # only true when a mitigation has run
 		self.current_mitigation = None
 
+		# set an initial mouse position
+		self.position = P.screen_c[0]
 
 	def assess_performance(self):
 		"""
@@ -147,14 +149,12 @@ class CompTrack(EnvAgent):
 		except IndexError:
 			pass
 
-
 	def end_trial(self, rt):
 		self.current_frame.rt= rt
 		self.assess_performance()		# does nothing if keys in P.assessing are False
 		if self.session_params['reset_target_after_poll']:
 		 	self.position = P.screen_c[0]
 		self.next_trial_start_time = None
-
 
 	def refresh(self, event_queue):
 		# update any mitigations currently in execution
@@ -166,18 +166,27 @@ class CompTrack(EnvAgent):
 		# start a new frame object to capture all the activity of this refresh
 		self.__new_frame()
 
+		# needed for subsequent statements
+		self.__capture_mouse_input(event_queue)
+
 		# Compute buffeting forces
 		self.__compute_forces()
 
-		self.__capture_mouse_input(event_queue)
-		self.position = self.position + self.current_frame.forces['net'] + self.current_frame.user_input
-		self.position = self.position + self.current_frame.forces['net'] + self.current_frame.user_input
+		# set initial position update based on mouse activity
+		self.position = self.position + self.current_frame.user_input
+
+		# then iteratively add all force contributions to current position, if they exist on this pass
+		for force in ['net', 'additional', 'buffeting']:
+			try:
+				self.position += self.current_frame.forces['additional']
+			except TypeError:
+				pass
 
 		self.__render()
 
-		# TODO: Make sure you can assign like this
 		self.current_frame.displacement = line_segment_len(P.screen_c, [self.position, P.screen_c[1]])
 		self.current_frame.timestamp = self.evm.trial_time
+
 
 	def mitigate(self, m_type):
 		if m_type is "Audio":
@@ -188,6 +197,13 @@ class CompTrack(EnvAgent):
 			self.current_mitigation = PauseMitigation(self, self.pause_duration, self.pausing_clears_screen, self.pause_targets)
 			self.current_mitigation.run()
 
+	def excessive_lapse_callback(self):
+		pass
+
+
+	def excessive_mean_rt_callback(self):
+		pass
+
 	def __clear_mitigations(self):
 		"""
 		This just exists because the mitigation objects can't unset themselves, and only mitigation objects call it.
@@ -195,9 +211,12 @@ class CompTrack(EnvAgent):
 		self.mitigating = False
 		self.current_mitigation = None
 
-
 	def __new_frame(self):
-		self.frames[P.trial_number].append(CompTrackFrame(self.exp.current_frame_id))
+		try:
+			self.frames[P.trial_number - 1].append(CompTrackFrame(self.exp.current_frame_id, self.evm.trial_time))
+		except IndexError:
+			self.frames.append([])
+			self.__new_frame()
 
 
 	def __render(self):
@@ -219,7 +238,6 @@ class CompTrack(EnvAgent):
 		# Spawn & blit PVT display (if PVT event; is None if between events and positive during ITIs)
 		if self.next_trial_start_time is 0:
 			# Digit string represents milliseconds elapsed since PVT onset
-			#TODO; j2j. I think this is wrong...
 			digit_str = str((self.evm.trial_time - self.current_frame.timestamp) * 1000)[0:4]
 			if digit_str[-1] == ".":
 				digit_str = digit_str[0:3]
@@ -237,7 +255,6 @@ class CompTrack(EnvAgent):
 		# Present display
 		flip()
 
-
 	def __buffeting_force(self):
 		"""
 		Generates variable buffeting force
@@ -254,7 +271,6 @@ class CompTrack(EnvAgent):
 		t = self.current_frame.timestamp
 		return sin(t) + sin(0.3 * t) + sin(0.5 * t) + sin(0.7 * t) - sin(0.9 * t)
 
-
 	def __compute_buffet_modifier_values(self, start=0.1, stop=1.4, count=100):
 		"""
 		Generates cyclical sequence of modifier terms used to generate additional buffeting forces
@@ -267,14 +283,19 @@ class CompTrack(EnvAgent):
 
 		self.forces['additional'] = np.append(modifiers, flip_and_reverse)
 
-
 	def __compute_forces(self):
 		"""
 		Aggregates buffeting forces to be applied on next render
 		"""
 
 		self.forces['buffeting'] = self.__buffeting_force()
-		self.forces['additional'] = self.__additional_buffeting_force()
+
+		# At the time of authorship, the contribution of this force was undecided, but the possibility of it's
+		# inclusion has been preserved
+		try:
+			self.forces['additional'] = self.__additional_force()
+		except AttributeError:
+			self.forces['additional'] = None
 		self.forces['net'] = self.forces['buffeting']
 
 		# update current frame
@@ -298,16 +319,13 @@ class CompTrack(EnvAgent):
 					 self.event_data['user_input'] = self.max_input_step
 
 				self.current_frame.user_input = event.motion.xrel
+
+		# if no mouse activity was detected, assign an integer anyway
+		if self.current_frame.user_input is None:
+			self.current_frame.user_input = 0
+
 		# Maintain mouse cursor at screen center to ensure all movement is catchable (i.e., can't run off screen)
 		mouse_pos(False, P.screen_c)
-
-
-	def excessive_lapse_callback(self):
-		pass
-
-
-	def excessive_mean_rt_callback(self):
-		pass
 
 
 	@property
@@ -315,7 +333,7 @@ class CompTrack(EnvAgent):
 		"""
 		Gets current position of cursor.
 		"""
-		return self.current_state['x_pos']
+		return self.x_pos
 
 
 	@position.setter
@@ -323,13 +341,13 @@ class CompTrack(EnvAgent):
 		"""
 		Set position of cursor, censors values which would place the cursor off screen
 		"""
-		if int(val) not in range(*self.session_params['x_bounds']):
-			if val < self.session_params['x_bounds'][0]:
-				val = self.session_params['x_bounds'][0]
+		if int(val) not in range(*self.x_bounds):
+			if val < self.x_bounds[0]:
+				val = self.x_bounds[0]
 			else:
-				val = self.session_params['x_bounds'][1]
+				val = self.x_bounds[1]
 
-		self.current_state['x_pos'] = val
+		self.x_pos = val
 
 	@property
 	def next_trial_start_time(self):
@@ -354,7 +372,7 @@ class CompTrack(EnvAgent):
 
 	@property
 	def current_frame(self):
-		return self.frames[P.trial_number -1][-1]
+		return self.frames[P.trial_number - 1][-1]
 
 	"""
 	Below: Left-overs from previous versions whose future inclusion isn't yet ruled out
@@ -385,11 +403,11 @@ class CompTrackFrame(EnvAgent):
 		self.participant_id = P.participant_id
 		self.trial_number = P.trial_number
 		self.block_number = P.block_number
-		self.timestamp = timestamp
+		self.__timestamp = timestamp
 		self.user_input = user_input
 		self.displacement = displacement
 		self.rt = None
-		self.forces = []
+		self.forces = {}
 		try:
 			self.forces['buffeting'] = forces['buffeting']
 			self.forces['additional'] = forces['additional']
@@ -405,7 +423,13 @@ class CompTrackFrame(EnvAgent):
 				self.forces['buffeting'], self.forces['additional'], self.forces['net'],
 				self.user_input, self.displacement, self.rt]
 
+	@property
+	def timestamp(self):
+		return float(self.__timestamp)
 
+	@timestamp.setter
+	def timestamp(self, val):
+		self.__timestamp = val
 
 class CompTrackAssessment(EnvAgent):
 	def __init__(self, mean_rt=None, lapses=None):

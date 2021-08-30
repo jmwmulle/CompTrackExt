@@ -39,8 +39,8 @@ saccadic_motion_threshold = 0.15
 # Experiment Structure
 #########################################
 multi_session_project = False
-trials_per_block = 0
-blocks_per_experiment = 1
+trials_per_block = 10
+blocks_per_experiment = 10
 table_defaults = {}
 conditions = []
 default_condition = None
@@ -67,7 +67,7 @@ datafile_ext = ".txt"
 #########################################
 iti = [5,10]  		# s, min/max
 pvt_timeout = 1 	# s
-exp_duration = 300 	# s
+experiment_duration = 300 	# s
 poll_while_moving = True
 poll_at_fixation = True
 reset_target_after_poll = True
