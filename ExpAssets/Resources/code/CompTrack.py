@@ -36,7 +36,7 @@ class CompTrack(EnvAgent):
 
 		self.frames = []
 		self.assessments = []
-		self.x_pos = None
+		self._position = None
 
 		#
 		# Define styles & create stimuli
@@ -96,8 +96,8 @@ class CompTrack(EnvAgent):
 		}
 
 		# Prepared DB statements
-		self.lapse_query_str = "SELECT COUNT(*) FROM `trials` WHERE `participant_id` = {} AND `rt` = false AND `trial_id` > {}"
-		self.mean_rt_query_str = "SELECT SUM(*) FROM `trials` WHERE `participant_id` = {} AND `rt` != false AND `trial_id` > {} / {}"
+		self.lapse_query_str = "SELECT COUNT(*) FROM `trials` WHERE `participant_id` = {0} AND `rt` = false AND `trial_num` > {1}"
+		self.mean_rt_query_str = "SELECT SUM(*) FROM `trials` WHERE `participant_id` = {0} AND `rt` != false AND `trial_num` > {1} / {2}"
 
 		# PVT config
 		self.max_input_step = P.max_input_step
@@ -109,7 +109,7 @@ class CompTrack(EnvAgent):
 		self.reset_target_after_poll = P.reset_target_after_poll
 		self.x_bounds = [int(0.5 * self.stim_sizes['cursor']),int(P.screen_x - 0.5 * self.stim_sizes['cursor'])]
 
-		# performane assessments
+		# performance assessments
 		self.assessment_sample_size = P.assessment_sample_size
 		self.assessing = P.assessing
 		self.max_mean_rt = P.max_mean_rt
@@ -152,7 +152,7 @@ class CompTrack(EnvAgent):
 	def end_trial(self, rt):
 		self.current_frame.rt= rt
 		self.assess_performance()		# does nothing if keys in P.assessing are False
-		if self.session_params['reset_target_after_poll']:
+		if self.reset_target_after_poll:
 		 	self.position = P.screen_c[0]
 		self.next_trial_start_time = None
 
@@ -166,26 +166,26 @@ class CompTrack(EnvAgent):
 		# start a new frame object to capture all the activity of this refresh
 		self.__new_frame()
 
-		# needed for subsequent statements
-		self.__capture_mouse_input(event_queue)
-
 		# Compute buffeting forces
 		self.__compute_forces()
-
-		# set initial position update based on mouse activity
-		self.position = self.position + self.current_frame.user_input
 
 		# then iteratively add all force contributions to current position, if they exist on this pass
 		for force in ['net', 'additional', 'buffeting']:
 			try:
-				self.position += self.current_frame.forces['additional']
+				self.position = self.position  + self.current_frame.forces[force]
 			except TypeError:
 				pass
 
-		self.__render()
+		# needed for subsequent statements
+		self.__capture_mouse_input(event_queue)
 
+		# set initial position update based on mouse activity
+		self.position = self.position + self.current_frame.user_input
+
+		self.__render()
 		self.current_frame.displacement = line_segment_len(P.screen_c, [self.position, P.screen_c[1]])
-		self.current_frame.timestamp = self.evm.trial_time
+		self.current_frame.target_position = self.position
+
 
 
 	def mitigate(self, m_type):
@@ -213,16 +213,19 @@ class CompTrack(EnvAgent):
 
 	def __new_frame(self):
 		try:
-			self.frames[P.trial_number - 1].append(CompTrackFrame(self.exp.current_frame_id, self.evm.trial_time))
+			self.frames[P.trial_number - 1].append(CompTrackFrame(self.exp.current_frame_id, now()))
 		except IndexError:
 			self.frames.append([])
 			self.__new_frame()
-
+		self.current_frame.target_position = self.position
 
 	def __render(self):
 		"""
 		Renders stimuli to screen.
 		"""
+		debug_this = False
+		if debug_this: print "\n\n>>> __render() >>>"
+
 		# if pausing everything, just don't ever blit or flip, EZ
 		if self.mitigating and self.current_mitigation.mitigation_type is "pause" and self.current_mitigation.include_targets:
 			return
@@ -236,9 +239,9 @@ class CompTrack(EnvAgent):
 			return
 
 		# Spawn & blit PVT display (if PVT event; is None if between events and positive during ITIs)
-		if self.next_trial_start_time is 0:
+		if self.time_until_next_trial is 0:
 			# Digit string represents milliseconds elapsed since PVT onset
-			digit_str = str((self.evm.trial_time - self.current_frame.timestamp) * 1000)[0:4]
+			digit_str = str((now() - self.next_trial_start_time) * 1000)[0:4]
 			if digit_str[-1] == ".":
 				digit_str = digit_str[0:3]
 			digits = message(digit_str, 'PVT_digits', flip_screen=False, blit_txt=False)
@@ -254,6 +257,8 @@ class CompTrack(EnvAgent):
 
 		# Present display
 		flip()
+
+		if debug_this: print "\n<<< __render() <<<"
 
 	def __buffeting_force(self):
 		"""
@@ -306,26 +311,33 @@ class CompTrack(EnvAgent):
 		"""
 		Captures mouse motion events
 		"""
+
+		# print "\n\n >>> __capture_mouse_input() >>>"
 		if self.mitigating and self.current_mitigation.mitigation_type is "pause":
 			return
 
 		for event in event_queue:
-			if event.type == sdl2.SDL_MOUSEMOTION and self.supervise_input:
-				if -self.max_input_step < event.motion.xrel < self.max_input_step:
-					 self.event_data['user_input'] = event.motion.xrel
-				elif event.motion.xrel < -self.max_input_step:
-					 self.event_data['user_input'] = -self.max_input_step
+			if event.type == sdl2.SDL_MOUSEMOTION:
+				if self.supervise_input:
+					if -self.max_input_step < event.motion.xrel < self.max_input_step:
+						self.current_frame.user_input = event.motion.xrel
+					elif event.motion.xrel < -self.max_input_step:
+						self.current_frame.user_input = -self.max_input_step
+					else:
+						self.current_frame.user_input = self.max_input_step
 				else:
-					 self.event_data['user_input'] = self.max_input_step
-
-				self.current_frame.user_input = event.motion.xrel
+					self.current_frame.user_input = event.motion.xrel
 
 		# if no mouse activity was detected, assign an integer anyway
 		if self.current_frame.user_input is None:
 			self.current_frame.user_input = 0
+		self.current_frame.user_input *= 1.0  # just make sure it's a float
 
 		# Maintain mouse cursor at screen center to ensure all movement is catchable (i.e., can't run off screen)
 		mouse_pos(False, P.screen_c)
+
+		# print "\n<<<__capture_mouse_input() <<<"
+		return self.current_frame.user_input
 
 
 	@property
@@ -333,7 +345,7 @@ class CompTrack(EnvAgent):
 		"""
 		Gets current position of cursor.
 		"""
-		return self.x_pos
+		return self._position
 
 
 	@position.setter
@@ -347,7 +359,7 @@ class CompTrack(EnvAgent):
 			else:
 				val = self.x_bounds[1]
 
-		self.x_pos = val
+		self._position = val
 
 	@property
 	def next_trial_start_time(self):
@@ -360,81 +372,60 @@ class CompTrack(EnvAgent):
 	@property
 	def time_until_next_trial(self):
 		# if the value is None, we are between trials
-		if (self.__next_trial_start_time is None):
+		if self.__next_trial_start_time is None:
 			raise ValueError('No trial scheduled')
 
 		# if the value is zero, a PVT is currently active
-		if (self.__next_trial_start_time - self.exp.trial_time) < 0:
+		if now() > self.__next_trial_start_time:
 			return 0
 
 		# else, just give the actual value
-		return self.__next_trial_start_time - self.exp.trial_time
+		return self.__next_trial_start_time - now()
 
 	@property
 	def current_frame(self):
 		return self.frames[P.trial_number - 1][-1]
 
-	"""
-	Below: Left-overs from previous versions whose future inclusion isn't yet ruled out
-
-
-	# TODO: Currently not in use, as it remains to be decided how/why/when to generate additional forces.
-	def __additional_buffeting_force(self):
-		# Generates additional buffeting forces
-		mod_idx = self.current_state['current_modifier']
-
-		if self.current_state['current_modifier'] == len(self.session_params['additional_force']) - 1:
-			self.current_state['current_modifier'] = 0
-		else:
-			self.current_state['current_modifier'] += 1
-
-		return self.session_params['additional_force'][mod_idx]
-
-
-	"""
-
-
-
 
 class CompTrackFrame(EnvAgent):
-	def __init__(self, id, timestamp=None, forces=None, user_input=None, displacement=None, rt=None):
+	def __init__(self, id, timestamp):
 		super(CompTrackFrame, self).__init__()
 		self.id = id
 		self.participant_id = P.participant_id
 		self.trial_number = P.trial_number
 		self.block_number = P.block_number
 		self.__timestamp = timestamp
-		self.user_input = user_input
-		self.displacement = displacement
-		self.rt = None
-		self.forces = {}
-		try:
-			self.forces['buffeting'] = forces['buffeting']
-			self.forces['additional'] = forces['additional']
-			self.forces['net'] = forces['net']
-		except TypeError:
-			self.forces['buffeting'] = None
-			self.forces['additional'] = None
-			self.forces['net'] = None
+		self.user_input = -1
+		self.displacement = -1
+		self.rt = -1
+		self.forces = {'buffeting': -1, 'additional': -1, 'net': -1}
+		self.target_position = -1  # note: at end, i.e, post forces & input
 
 
-	def dump(self):
-		return [self.participant_id, self.trial_number, self.block_number, self.timestamp,
+	def dump(self, verbose=False):
+		data = [P.participant_id, self.block_number, self.trial_number, self.timestamp,
 				self.forces['buffeting'], self.forces['additional'], self.forces['net'],
-				self.user_input, self.displacement, self.rt]
+				self.user_input, self.target_position, self.displacement, self.rt]
+		labels = ['participant_id','block_num', 'trial_num', 'timestamp', 'buffeting_force', 'additional_force', 'net_force',
+				  'user_input', 'target_position','displacement', 'rt']
+		if verbose:
+			dump_str = ''
+			for i in range(0, len(labels)):
+				dump_str += "{0}: {1} |\t".format(labels[i], data[i])
+
+			return dump_str
+
+		return {labels[i]:data[i] for i in range(0, len(labels))}
 
 	@property
 	def timestamp(self):
 		return float(self.__timestamp)
 
-	@timestamp.setter
-	def timestamp(self, val):
-		self.__timestamp = val
 
 class CompTrackAssessment(EnvAgent):
 	def __init__(self, mean_rt=None, lapses=None):
 		super(CompTrackAssessment, self).__init__()
-		self.timestamp = self.evm.trial_time
+		self.timestamp = now()
 		self.lapses = lapses
 		self.mean_rt = None
 		self.participant_id = P.participant_id
@@ -483,14 +474,14 @@ class AudioMitigation(CompTrackMitigation):
 			pass
 		self.comp_track.mitigating = True
 		self.tone.play()
-		self.evm.register_ticket(mitigation_label("audio"), self.evm.trial_time + self.duration)
+		self.ends_at = now() + self.duration
 
 	def update(self):
 		"""
 		As we don't wish to lock-up the system while the tone plays, it is the responsibility of the CompTrack object to
 		call this in it's loop.
 		"""
-		if (self.evm.before(mitigation_label("audio"))):
+		if now() < self.ends_at:
 			return
 		self.tone.stop()
 		self.comp_track.__clear_mitigations()
@@ -503,6 +494,7 @@ class PauseMitigation(CompTrackMitigation):
 		self.include_target = pause_target
 		self.mitigation_type = "pause"
 		self.clear_screen = clear_screen
+		self.ends_at = None
 
 
 	def run(self):
@@ -510,10 +502,10 @@ class PauseMitigation(CompTrackMitigation):
 			self.message()
 		except AttributeError:
 			pass
-		self.evm.register_ticket(mitigation_label("pause"), self.evm.trial_time + self.duration)
+		self.ends_at = now() + self.duration
 
 	def update(self):
-		if (self.evm.before(mitigation_label("pause"))):
+		if now() < self.ends_at:
 			return
 		self.comp_track.__clear_mitigations()
 
@@ -527,9 +519,10 @@ class RampMitigation(CompTrackMitigation):
 		self.onset = None
 		self.mitigation_type = "ramp"
 		self.factor_initial_values = []
+		self.ends_at = None
 
 	def run(self):
-		self.onset = self.evm.trial_time
+		self.onset = now()
 		try:
 			self.message()
 		except AttributeError:
@@ -538,10 +531,10 @@ class RampMitigation(CompTrackMitigation):
 		for f in self.factors_cfg:
 			f_name = f['factor']
 			self.factor_initial_values.append([f_name, self.comp_track[f_name]])
-		self.evm.register_ticket(mitigation_label("ramp"), self.evm.trial_time + self.duration)
+		self.ends_at = now() + self.duration
 
 	def update(self):
-		if self.evm.before(mitigation_label("ramp")):
+		if now() < self.ends_at:
 			for f in self.factors_cfg:
 				f_name = f['factor']
 				try:
@@ -558,4 +551,4 @@ class RampMitigation(CompTrackMitigation):
 
 	@property
 	def elapsed(self):
-		return self.evm.trial_time - self.onset
+		return now() - self.onset

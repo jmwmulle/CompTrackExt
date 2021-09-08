@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Brett Feltmate"
-
+from sdl2 import SDL_GetKeyFromName, SDL_KEYDOWN, SDL_KEYUP, SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP, SDLK_SPACE
 import random
 import klibs
 from klibs import P
@@ -12,12 +12,14 @@ from klibs.KLUtilities import *
 from klibs.KLEventInterface import TrialEventTicket as TVT
 from klibs.KLConstants import *
 from klibs.KLKeyMap import KeyMap
+from klibs.KLResponseCollectors import Response, KeyPressResponse
 import sdl2
 from klibs.KLGraphics.KLNumpySurface import *
 from CompTrack import *
 import klibs.KLDatabase
 import subprocess
 
+from klibs.KLDatabase import EntryTemplate
 
 class CompensatoryTrackingTask(klibs.Experiment):
 
@@ -26,6 +28,7 @@ class CompensatoryTrackingTask(klibs.Experiment):
 		# Ensure display has been wiped before starting
 		clear()
 		flip()
+
 
 		self.frames = []  # data for every screen refresh are captured and stored by trial
 
@@ -39,6 +42,7 @@ class CompensatoryTrackingTask(klibs.Experiment):
 		self.comp_track.timeout_after = P.pvt_timeout
 		self.generate_ITIs()
 
+
 		# Ensure mouse starts at centre and set invisible
 		mouse_pos(False, P.screen_c)
 		hide_mouse_cursor()
@@ -48,36 +52,39 @@ class CompensatoryTrackingTask(klibs.Experiment):
 		pass
 
 	def setup_response_collector(self):
-		self.rc.uses([KeyPressResponse])
-		self.rc.listeners['keypress_listener'].key_map = KeyMap('PVTMap', ['space'], ['SPACE'], [sdl2.SDLK_KP_SPACE])
-		self.rc.listeners['keypress_listener'].interrupts = True
-		self.rc.display_callback = self.comp_track.refresh
-		self.rc.display_args = [self.event_queue]  # note, RC splats the passed list, so we need to encapsulate
-		self.rc.before_return_callback = self.event_label
-		self.rc.before_return_args = ['response', self.evm.trial_time]
+		pass
 
 	def trial_prep(self):
-		self.comp_track.next_trial_start_time = self.evm.trial_time + self.itis.pop()
-		self.evm.register_ticket(TVT(self.event_label('pvt'), self.comp_track.next_trial_start_time))
+		self.comp_track.next_trial_start_time = now() + self.itis.pop()
+		self.start = now()
 		pump()
 
 	def trial(self):
-		while self.evm.before(self.event_label('pvt')):
+		start = now()
+		rt = -1
+
+		while now() < self.comp_track.next_trial_start_time + P.pvt_timeout:
 			event_q = pump(True)
-			ui_request(None, None, event_q)
+			ui_request(None, True, event_q)
 			self.comp_track.refresh(event_q)
-		self.comp_track.end_trial(self.rc.collect()[1])
+			if now() >= self.comp_track.next_trial_start_time:
+				for event in event_q:
+					if event.type == SDL_KEYDOWN and event.key.keysym == SDLK_SPACE:
+						key = event.key.keysym # keyboard button event object
+						ui_request(key) # check for ui requests (ie. quit, calibrate)
+						if key == SDLK_SPACE:
+							rt = now() - start
+							break
+		if not rt:
+			# here's where we could  add feedback immediately after a lapse, were it desired
+			pass
+		self.comp_track.end_trial(rt)
 
-		trial_data = {
-			"block_num": P.block_number,
-			"trial_num": P.trial_number,
-			'participant_id': P.participant_id,
+		return {'block_num': P.block_number,
+				'trial_num' : P.trial_number,
+				'timestamp': self.comp_track.current_frame.timestamp,
+				'rt': self.comp_track.current_frame.rt
 		}
-		frame_keys = ['timestamp', 'buffeting_force', 'additional_force', 'net_force', 'user_input', 'target_position', 'displacement', 'rt']
-		frame_data = {frame_keys[i]: self.CompTrack.current_frame.dump()[i] for i in range(len(frame_keys))}
-		trial_data.update(frame_data)
-
-		return trial_data
 
 	def trial_clean_up(self):
 		pass
@@ -86,8 +93,9 @@ class CompensatoryTrackingTask(klibs.Experiment):
 		for a in self.comp_track.assessments:
 			self.db.insert(a.dump(), 'assessments')
 
-		for f in self.comp_track.frames:
-			self.db.insert(f.dump(), 'frames')
+		for trial in self.comp_track.frames:
+			for f in trial:
+				self.db.insert(f.dump(), 'frames')
 
 
 	def check_osx_mouse_shake_setting(self):
@@ -105,23 +113,26 @@ class CompensatoryTrackingTask(klibs.Experiment):
 			quit()
 
 	def generate_ITIs(self):
-		if not P.development_mode:
-			trial_count = P.trials_per_block * P.blocks_per_experiment
-			expected_duration = (0.25 * trial_count * P.pvt_timeout) + ( trial_count * sum(P.iti) * 0.5)
-			if expected_duration < P.exp_duration:
-				raise ValueError("It is unlikely this number of trials can be completed in the allotted time.")
+
+		trial_count = P.trials_per_block * P.blocks_per_experiment
+		expected_duration = (0.5 * trial_count * P.pvt_timeout) + ( trial_count * sum(P.iti) * 0.5)
+
+		if expected_duration > P.experiment_duration:
+			raise ValueError("It is unlikely this number of trials, of the proposed ITIs, can be completed in the allotted time.")
 
 		# start with a uniform block of minimum itis
 		self.itis = P.trials_per_block * P.blocks_per_experiment * [P.iti[0]]
 
 		surplus = P.experiment_duration - sum(self.itis)
+
 		if surplus > P.trials_per_block * P.blocks_per_experiment * [P.iti[1]]:
 			raise ValueError("This experiment duration cannot be met with this trial count/ITI combination.")
 		while surplus > 0:
-			index = random.randint(0,len(self.itis))
+			index = random.randint(0,len(self.itis) -1)
 			if self.itis[index] < P.iti[1]:
 				self.itis[index] += 1
 				surplus -= 1
+			surplus = P.experiment_duration - sum(self.itis)
 
 	@property
 	def event_queue(self):
@@ -139,3 +150,24 @@ class CompensatoryTrackingTask(klibs.Experiment):
 
 
 )
+
+
+
+class PVTResponse(KeyPressResponse):
+	__name__ = 'pvt_listener'
+
+	def init(self):
+		pass
+		# self.__name__ = "pvt_listener"
+
+	def listen(self, event_queue):
+		for event in event_queue:
+			if event.type == SDL_KEYDOWN:
+				key = event.key.keysym # keyboard button event object
+				ui_request(key) # check for ui requests (ie. quit, calibrate)
+				if key == SDLK_SPACE:
+					return Response(True, self.evm.trial_time_ms - self._rc_start)
+				# if self.key_map.validate(key.sym):
+				# 	value = self.key_map.read(key.sym, "data")
+				# 	rt = (self.evm.trial_time_ms - self._rc_start)
+				# 	return Response(value, rt)

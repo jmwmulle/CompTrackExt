@@ -65,15 +65,15 @@ datafile_ext = ".txt"
 #########################################
 # PROJECT-SPECIFIC VARS
 #########################################
-iti = [5,10]  		# s, min/max
-pvt_timeout = 1 	# s
-experiment_duration = 300 	# s
+iti = [3,5]  		# s, min/max
+pvt_timeout = 1.0 	# s
+experiment_duration = 500 	# s
 poll_while_moving = True
 poll_at_fixation = True
 reset_target_after_poll = True
 assessment_sample_size = 5
-supervise_input = False
-max_input_step = 4  # ie. is input is supervised, this is the threshld initiating it, in pixels-travlled-per-frame
+supervise_input = True
+max_input_step = 5  # ie. is input is supervised, this is the threshld initiating it, in pixels-travlled-per-frame
 excessive_lapse_threshold = 3  # in number of lapses per assessment window
 max_mean_rt = 0.5
 assessing = {'lapses':True, 'mean_rt': True}
